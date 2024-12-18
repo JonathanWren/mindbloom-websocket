@@ -111,7 +111,7 @@ try {
               enableAutomaticPunctuation: true,
               model: 'latest_short',
             },
-            interimResults: false,
+            interimResults: true, // Updated to enable interim results
           })
           .on('error', (error) => {
             if (error.message !== 'write after end') {
@@ -122,7 +122,10 @@ try {
           .on('data', (data) => {
             const result = data.results[0];
             if (result && result.alternatives[0]) {
-              socket.emit('transcription', result.alternatives[0].transcript);
+              socket.emit('transcription', {
+                text: result.alternatives[0].transcript,
+                isFinal: result.isFinal
+              });
             }
           })
           .on('end', () => {
