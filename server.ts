@@ -2,7 +2,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import { SpeechClient, protos } from '@google-cloud/speech';
+import { SpeechClient } from '@google-cloud/speech';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
@@ -90,6 +90,7 @@ try {
     console.log("Client connected");
 
     let recognizeStream: RecognizeStream | null = null;
+    let isStreamEnded = false;
 
     socket.on("startStream", () => {
       if (!hasValidCredentials || !speechClient) {
@@ -98,6 +99,9 @@ try {
       }
 
       try {
+        // Reset stream state
+        isStreamEnded = false;
+        
         recognizeStream = speechClient
           .streamingRecognize({
             config: {
@@ -107,17 +111,23 @@ try {
               enableAutomaticPunctuation: true,
               model: 'latest_short',
             },
-            interimResults: false, // Changed to false to prevent duplicate interim results
+            interimResults: false,
           })
           .on('error', (error) => {
-            console.error('Speech recognition error:', error);
-            socket.emit('error', `Speech recognition error: ${error.message}`);
+            if (error.message !== 'write after end') {
+              console.error('Speech recognition error:', error);
+              socket.emit('error', `Speech recognition error: ${error.message}`);
+            }
           })
           .on('data', (data) => {
             const result = data.results[0];
             if (result && result.alternatives[0]) {
               socket.emit('transcription', result.alternatives[0].transcript);
             }
+          })
+          .on('end', () => {
+            isStreamEnded = true;
+            recognizeStream = null;
           });
       } catch (error) {
         console.error('Error starting stream:', error);
@@ -126,7 +136,7 @@ try {
     });
 
     socket.on("binaryData", (data) => {
-      if (recognizeStream) {
+      if (recognizeStream && !isStreamEnded) {
         try {
           recognizeStream.write(data);
         } catch (error) {
@@ -137,9 +147,11 @@ try {
     });
 
     socket.on("endStream", () => {
-      if (recognizeStream) {
+      if (recognizeStream && !isStreamEnded) {
         try {
+          isStreamEnded = true;
           recognizeStream.end();
+          recognizeStream = null;
         } catch (error) {
           console.error('Error ending stream:', error);
         }
@@ -148,9 +160,11 @@ try {
 
     socket.on("disconnect", () => {
       console.log("Client disconnected");
-      if (recognizeStream) {
+      if (recognizeStream && !isStreamEnded) {
         try {
+          isStreamEnded = true;
           recognizeStream.end();
+          recognizeStream = null;
         } catch (error) {
           console.error('Error ending stream on disconnect:', error);
         }
