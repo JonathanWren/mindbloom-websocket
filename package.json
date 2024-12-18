@@ -2,13 +2,13 @@
   "name": "mindbloom-server",
   "version": "1.0.0",
   "description": "WebSocket server for MindBloom application",
-  "main": "dist/server.js",
   "type": "module",
+  "main": "dist/server.js",
   "scripts": {
     "start": "node dist/server.js",
     "build": "tsc",
-    "dev": "ts-node server.ts",
-    "postinstall": "npm run build"
+    "postinstall": "tsc",
+    "dev": "node --loader ts-node/esm server.ts"
   },
   "dependencies": {
     "@google-cloud/speech": "^5.1.0",
