@@ -2,9 +2,12 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import { SpeechClient } from '@google-cloud/speech';
+import { SpeechClient, protos } from '@google-cloud/speech';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+
+// Define the specific type for the recognize stream
+type RecognizeStream = ReturnType<SpeechClient['streamingRecognize']>;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -12,9 +15,43 @@ const __dirname = dirname(__filename);
 const app = express();
 app.use(cors());
 
-// Basic health check endpoint
+// Validate Google credentials on startup
+const validateGoogleCredentials = () => {
+  const credentials = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (!credentials) {
+    console.error('ERROR: GOOGLE_APPLICATION_CREDENTIALS environment variable is not set');
+    return false;
+  }
+
+  try {
+    const parsedCredentials = JSON.parse(credentials);
+    console.log('Credentials loaded successfully');
+    return true;
+  } catch (error) {
+    console.error('ERROR: Failed to parse Google credentials:', error);
+    return false;
+  }
+};
+
+const hasValidCredentials = validateGoogleCredentials();
+
+// Basic health check endpoint that includes credentials status
 app.get('/', (req, res) => {
-  res.send('Server is running');
+  res.json({
+    status: 'Server is running',
+    googleCredentials: hasValidCredentials ? 'configured' : 'missing or invalid',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Add a test endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    socketio: 'enabled',
+    cors: 'enabled'
+  });
 });
 
 const httpServer = createServer(app);
@@ -26,8 +63,9 @@ httpServer.on('error', (error) => {
 
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
-    methods: ["GET", "POST"]
+    origin: '*',  // During testing, accept all origins
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
@@ -37,16 +75,28 @@ io.on('error', (error) => {
 });
 
 try {
-  const speechClient = new SpeechClient({
-    credentials: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS || '{}'),
-  });
+  let speechClient: SpeechClient | undefined;
+  
+  if (hasValidCredentials) {
+    speechClient = new SpeechClient({
+      credentials: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS || '{}'),
+    });
+    console.log('Successfully initialized Google Speech-to-Text client');
+  } else {
+    console.warn('WARNING: Speech-to-Text functionality will not be available');
+  }
 
   io.on("connection", (socket) => {
     console.log("Client connected");
 
-    let recognizeStream: any = null;
+    let recognizeStream: RecognizeStream | null = null;
 
     socket.on("startStream", () => {
+      if (!hasValidCredentials || !speechClient) {
+        socket.emit('error', 'Speech-to-Text service is not configured');
+        return;
+      }
+
       try {
         recognizeStream = speechClient
           .streamingRecognize({
@@ -57,15 +107,15 @@ try {
               enableAutomaticPunctuation: true,
               model: 'latest_short',
             },
-            interimResults: true,
+            interimResults: false, // Changed to false to prevent duplicate interim results
           })
           .on('error', (error) => {
             console.error('Speech recognition error:', error);
-            socket.emit('error', 'Speech recognition error occurred');
+            socket.emit('error', `Speech recognition error: ${error.message}`);
           })
           .on('data', (data) => {
             const result = data.results[0];
-            if (result) {
+            if (result && result.alternatives[0]) {
               socket.emit('transcription', result.alternatives[0].transcript);
             }
           });
@@ -112,7 +162,7 @@ try {
   httpServer.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
     console.log('Environment:', process.env.NODE_ENV);
-    console.log('Google credentials available:', !!process.env.GOOGLE_APPLICATION_CREDENTIALS);
+    console.log('Google credentials status:', hasValidCredentials ? 'valid' : 'invalid or missing');
   });
 
 } catch (error) {
